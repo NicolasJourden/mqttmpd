@@ -27,14 +27,22 @@
 #define VERSION "<undefined version>"
 #endif
 
+#define LOG_MQTTMPD_TRACE	0
+#define LOG_MQTTMPD_NOTICE	1
+#define LOG_MQTTMPD_INFO	2
+#define LOG_MQTTMPD_WARNING	3
+#define LOG_MQTTMPD_ERROR	4
+
+
 /* generic error logging */
 #define mylog(loglevel, fmt, ...) \
 	({\
 		syslog(loglevel, fmt, ##__VA_ARGS__); \
-		if (loglevel <= LOG_ERR)\
+		if (loglevel >= LOG_MQTTMPD_ERROR)\
 			exit(1);\
 	})
 #define ESTR(num)	strerror(num)
+
 
 /* program options */
 static const char help_msg[] =
@@ -114,10 +122,10 @@ static time_t playingt;
 static void my_mqtt_log(struct mosquitto *mosq, void *userdata, int level, const char *str)
 {
 	static const int logpri_map[] = {
-		MOSQ_LOG_ERR, LOG_ERR,
-		MOSQ_LOG_WARNING, LOG_WARNING,
-		MOSQ_LOG_NOTICE, LOG_NOTICE,
-		MOSQ_LOG_INFO, LOG_INFO,
+		MOSQ_LOG_ERR, LOG_MQTTMPD_ERROR,
+		MOSQ_LOG_WARNING, LOG_MQTTMPD_WARNING,
+		MOSQ_LOG_NOTICE, LOG_MQTTMPD_NOTICE,
+		MOSQ_LOG_INFO, LOG_MQTTMPD_INFO,
 		//MOSQ_LOG_DEBUG, LOG_DEBUG,
 		0,
 	};
@@ -148,7 +156,7 @@ static void mymqttpub(const char *topic, int retain, const char *fmt, ...)
 
 	ret = mosquitto_publish(mosq, NULL, fulltopic, strlen(payload ?: ""), payload, mqtt_qos, retain);
 	if (ret < 0)
-		mylog(LOG_ERR, "mosquitto_publish %s: %s", fulltopic, mosquitto_strerror(ret));
+		mylog(LOG_MQTTMPD_ERROR, "mosquitto_publish %s: %s", fulltopic, mosquitto_strerror(ret));
 	free(fulltopic);
 	free(payload);
 }
@@ -166,7 +174,7 @@ static int sendto_mpd(int sock, const char *fmt, ...)
 	va_end(va);
 	asprintf(&str, "%scommand_list_begin;%s;idle;command_list_end;", mpdidle ? "noidle;" : "", str2);
 	free(str2);
-	mylog(LOG_INFO, "> '%s'", str);
+	mylog(LOG_MQTTMPD_INFO, "> '%s'", str);
 	/* replace ; with \n */
 	for (str2 = str; *str2; ++str2)
 		if (*str2 == ';')
@@ -174,7 +182,7 @@ static int sendto_mpd(int sock, const char *fmt, ...)
 
 	ret = send(sock, str, strlen(str), MSG_NOSIGNAL);
 	if (ret < 0)
-		mylog(LOG_ERR, "mpd send '%s' failed: %s", str, ESTR(errno));
+		mylog(LOG_MQTTMPD_ERROR, "mpd send '%s' failed: %s", str, ESTR(errno));
 	free(str);
 	++mpdncmds;
 	mpdidle = 1;
@@ -222,7 +230,7 @@ static char **tokenize(char *str, const char *sep)
 			s += 16;
 			a = realloc(a, sizeof(*a)*s);
 			if (!a)
-				mylog(LOG_ERR, "realloc %u char *: %s", s, ESTR(errno));
+				mylog(LOG_MQTTMPD_ERROR, "realloc %u char *: %s", s, ESTR(errno));
 		}
 		a[n++] = tok;
 	}
@@ -323,7 +331,7 @@ static void my_mqtt_msg(struct mosquitto *mosq, void *dat, const struct mosquitt
 			}
 			if ((now - plselt) > 10 && plsel) {
 				/* stop last selected playing song */
-				mylog(LOG_NOTICE, "stop playlist '%s'", plsel);
+				mylog(LOG_MQTTMPD_NOTICE, "stop playlist '%s'", plsel);
 				free(plsel);
 				plsel = NULL;
 				mymqttpub("playlist/selected", 0, NULL);
@@ -333,7 +341,7 @@ static void my_mqtt_msg(struct mosquitto *mosq, void *dat, const struct mosquitt
 			/* choose 1 of the list */
 			pls = tokenize(value, " \t");
 			if (!pls || !*pls) {
-				mylog(LOG_WARNING, "empty playlist selection provide");
+				mylog(LOG_MQTTMPD_WARNING, "empty playlist selection provide");
 				return;
 			}
 
@@ -346,7 +354,7 @@ static void my_mqtt_msg(struct mosquitto *mosq, void *dat, const struct mosquitt
 				++it;
 				if (!*it) {
 					/* went past the list */
-					mylog(LOG_NOTICE, "no more playlists to choose");
+					mylog(LOG_MQTTMPD_NOTICE, "no more playlists to choose");
 					free(plsel);
 					plsel = NULL;
 					mymqttpub("playlist/selected", 0, NULL);
@@ -371,7 +379,7 @@ static void my_mqtt_msg(struct mosquitto *mosq, void *dat, const struct mosquitt
 				return;
 			}
 		}
-		mylog(LOG_NOTICE, "select playlist '%s' -> '%s'", plsel ?: "", value);
+		mylog(LOG_MQTTMPD_NOTICE, "select playlist '%s' -> '%s'", plsel ?: "", value);
 		if (plsel)
 			free(plsel);
 		plsel = strdup(value);
@@ -408,7 +416,7 @@ playlist:;
 			goto playlist;
 
 	} else
-		;//mylog(LOG_WARNING, "Unhandled subtopic '%s=%s'", subtopic, value);
+		;//mylog(LOG_MQTTMPD_WARNING, "Unhandled subtopic '%s=%s'", subtopic, value);
 }
 
 static int connect_uri(const char *host, int default_port, int preferred_type)
@@ -429,9 +437,9 @@ static int connect_uri(const char *host, int default_port, int preferred_type)
 			socklen = strlen(host) + offsetof(struct sockaddr_un, sun_path);
 		sock = socket(AF_UNIX, preferred_type, 0);
 		if (sock < 0)
-			mylog(LOG_ERR, "socket AF_UNIX ...: %s", ESTR(errno));
+			mylog(LOG_MQTTMPD_ERROR, "socket AF_UNIX ...: %s", ESTR(errno));
 		if (connect(sock, (void *)&addr, socklen) < 0)
-			mylog(LOG_ERR, "bind %s: %s", host, ESTR(errno));
+			mylog(LOG_MQTTMPD_ERROR, "bind %s: %s", host, ESTR(errno));
 		return sock;
 	}
 
@@ -453,7 +461,7 @@ static int connect_uri(const char *host, int default_port, int preferred_type)
 #endif
 	/* resolve host to IP */
 	if (getaddrinfo(uri.host ?: "localhost", portstr, &hints, &paddr) < 0) {
-		mylog(LOG_WARNING, "getaddrinfo %s %s: %s", uri.host, portstr, ESTR(errno));
+		mylog(LOG_MQTTMPD_WARNING, "getaddrinfo %s %s: %s", uri.host, portstr, ESTR(errno));
 		sock = -1;
 		goto ready;
 	}
@@ -471,7 +479,7 @@ static int connect_uri(const char *host, int default_port, int preferred_type)
 	if (!ai) {
 		/* no more addrinfo left over */
 		sock = -1;
-		mylog(LOG_WARNING, "connect %s:%u failed: %s", uri.host, uri.port ?: default_port, ESTR(errno));
+		mylog(LOG_MQTTMPD_WARNING, "connect %s:%u failed: %s", uri.host, uri.port ?: default_port, ESTR(errno));
 	}
 	freeaddrinfo(paddr);
 ready:
@@ -519,7 +527,7 @@ static char **propcache(const char *propname)
 		sstate += 128;
 		state = realloc(state, sstate*sizeof(state[0]));
 		if (!state)
-			mylog(LOG_ERR, "realloc state: %s", ESTR(errno));
+			mylog(LOG_MQTTMPD_ERROR, "realloc state: %s", ESTR(errno));
 	}
 	state[j] = strdup(propname);
 	/* pre-assign a default value, and avoid multiple checks
@@ -625,7 +633,7 @@ int main(int argc, char *argv[])
 	sprintf(mqtt_name, "%s-%i", NAME, getpid());
 	mosq = mosquitto_new(mqtt_name, true, 0);
 	if (!mosq)
-		mylog(LOG_ERR, "mosquitto_new failed: %s", ESTR(errno));
+		mylog(LOG_MQTTMPD_ERROR, "mosquitto_new failed: %s", ESTR(errno));
 	/* mosquitto_will_set(mosq, "TOPIC", 0, NULL, mqtt_qos, 1); */
 
 	mosquitto_log_callback_set(mosq, my_mqtt_log);
@@ -634,24 +642,30 @@ int main(int argc, char *argv[])
 	if (mquri.user || mquri.pass) {
 		ret = mosquitto_username_pw_set(mosq, mquri.user, mquri.pass);
 		if (ret)
-			mylog(LOG_ERR, "mosquitto_username_pw_set(%s, %s): %s",
+			mylog(LOG_MQTTMPD_ERROR, "mosquitto_username_pw_set(%s, %s): %s",
 					mquri.user ?: "NULL", mquri.pass ? "***" : "NULL",
 					mosquitto_strerror(ret));
 	}
 
-	ret = mosquitto_connect(mosq, mquri.host ?: "localhost",
+mqtt_connect:
+	for (; !sigterm;) {
+		ret = mosquitto_connect(mosq, mquri.host ?: "localhost",
 			mquri.port ?: mqtt_default_port, mqtt_keepalive);
-	if (ret)
-		mylog(LOG_ERR, "mosquitto_connect %s:%i: %s", mquri.host ?: "localhost",
-				mquri.port ?: mqtt_default_port, mosquitto_strerror(ret));
-
-	lib_clean_uri(&mquri);
+			mylog(LOG_MQTTMPD_INFO, "hi");
+		if (ret) {
+			mylog(LOG_MQTTMPD_NOTICE, "mosquitto_connect %s:%i: %s", mquri.host ?: "localhost",
+					mquri.port ?: mqtt_default_port, mosquitto_strerror(ret));
+		} else {
+			break;
+		}
+		sleep(5);
+	}
 
 	/* SUBSCRIBE */
 	asprintf(&str, "%s/#", topicroot);
 	ret = mosquitto_subscribe(mosq, NULL, str, mqtt_qos);
 	if (ret)
-		mylog(LOG_ERR, "mosquitto_subscribe '%s': %s", str, mosquitto_strerror(ret));
+		mylog(LOG_MQTTMPD_ERROR, "mosquitto_subscribe '%s': %s", str, mosquitto_strerror(ret));
 	free(str);
 
 	/* prepare poll */
@@ -667,24 +681,29 @@ int main(int argc, char *argv[])
 		/* mosquitto things to do each iteration */
 		ret = mosquitto_loop_misc(mosq);
 		if (ret)
-			mylog(LOG_ERR, "mosquitto_loop_misc: %s", mosquitto_strerror(ret));
+			mylog(LOG_MQTTMPD_ERROR, "mosquitto_loop_misc: %s", mosquitto_strerror(ret));
 		if (mosquitto_want_write(mosq)) {
 			ret = mosquitto_loop_write(mosq, 1);
 			if (ret)
-				mylog(LOG_ERR, "mosquitto_loop_write: %s", mosquitto_strerror(ret));
+				mylog(LOG_MQTTMPD_ERROR, "mosquitto_loop_write: %s", mosquitto_strerror(ret));
 		}
 		/* prepare wait */
 		ret = poll(pf, sizeof(pf)/sizeof(pf[0]), 1000);
 		if (ret < 0 && errno == EINTR)
 			continue;
 		if (ret < 0)
-			mylog(LOG_ERR, "poll ...");
+			mylog(LOG_MQTTMPD_ERROR, "poll ...");
 
 		if (pf[0].revents) {
 			/* mqtt read ... */
 			ret = mosquitto_loop_read(mosq, 1);
-			if (ret)
-				mylog(LOG_ERR, "mosquitto_loop_read: %s", mosquitto_strerror(ret));
+
+			if (ret == MOSQ_ERR_CONN_LOST || ret == MOSQ_ERR_PROTOCOL) {
+				mylog(LOG_MQTTMPD_WARNING, "mosquitto_loop_read: server %s", mosquitto_strerror(ret));
+				goto mqtt_connect;
+			} else if (ret) {
+				mylog(LOG_MQTTMPD_ERROR, "mosquitto_loop_read: other %s", mosquitto_strerror(ret));
+			}
 		}
 		if (pf[1].revents) {
 			char *tok, *saved, *value, **pcache;
@@ -695,23 +714,23 @@ int main(int argc, char *argv[])
 
 			filled = strlen(recvbuf);
 			if (filled >= sizeof(recvbuf)-1)
-				mylog(LOG_ERR, "recv mpd: buffer filled");
+				mylog(LOG_MQTTMPD_ERROR, "recv mpd: buffer filled");
 			filled = 0;
 			/* read mpd changes */
 			ret = recv(mpdsock, recvbuf+filled, sizeof(recvbuf)-1-filled, 0);
 			if (ret < 0)
-				mylog(LOG_ERR, "recv mpd: %s", ESTR(errno));
+				mylog(LOG_MQTTMPD_ERROR, "recv mpd: %s", ESTR(errno));
 			if (ret == 0)
-				mylog(LOG_ERR, "recv mpd: closed");
+				mylog(LOG_MQTTMPD_ERROR, "recv mpd: closed");
 			recvbuf[filled+ret] = 0;
 			/* TODO: clear absent state entries */
 			for (tok = mystrtok_r(recvbuf, "\n\r", &saved); tok; tok = mystrtok_r(NULL, "\n\r", &saved)) {
 				if (!strncmp(tok, "OK", 2) || !strncmp(tok, "ACK", 3)) {
 					if (!strncmp(tok, "ACK", 3))
-						mylog(LOG_WARNING, "%s", tok);
+						mylog(LOG_MQTTMPD_WARNING, "Unkown: %s", tok);
 					/* command returned */
 					mpdncmds -= 1;
-					mylog(LOG_INFO, "< '%s'", tok);
+					mylog(LOG_MQTTMPD_INFO, "< '%s'", tok);
 					continue;
 				}
 				value = propvalue(tok);
@@ -731,7 +750,7 @@ int main(int argc, char *argv[])
 				}
 				/* replace 'state' */
 				if (!strcmp(tok, "state")) {
-					//mylog(LOG_INFO, "< '%s: %s'", tok, value);
+					//mylog(LOG_MQTTMPD_INFO, "< '%s: %s'", tok, value);
 					tok = "play";
 					value = !strcmp(value, "play") ? "1" : "0";
 					playing = *value == '1';
@@ -756,7 +775,7 @@ int main(int argc, char *argv[])
 						pltablesize += 16;
 						pltable = realloc(pltable, pltablesize*sizeof(*pltable));
 						if (!pltable)
-							mylog(LOG_ERR, "realloc failed: %s", ESTR(errno));
+							mylog(LOG_MQTTMPD_ERROR, "realloc failed: %s", ESTR(errno));
 						memset(pltable+pltablefill, 0, (pltablesize-pltablefill)*sizeof(*pltable));
 					}
 					if (pltable[pltablefill])
